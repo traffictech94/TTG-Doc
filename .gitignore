@@ -1,5 +1,4 @@
-# Keep account credentials and unused reference workbooks out of GitHub.
-users.xlsx
+# Static sign-in reads users.xlsx during the Pages build. Its account list will be publicly readable.
 Form.xlsx
 TTG worksheet for wir and mir Rev1.xlsx
 tracker_server.log
