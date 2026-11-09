@@ -85,10 +85,14 @@ def build(output: Path) -> None:
     update_tracker.attach_matches(records, attachments)
 
     copied = {"MIR": [], "WIR": [], "Delivery": [], "CRS": []}
+    crs_file_types = {".pdf", ".xlsx", ".xls", ".docx", ".doc", ".png", ".jpg", ".jpeg"}
     for kind, files in attachments.items():
         for info in files:
             source = ROOT / Path(info["path"])
-            if not source.is_file() or source.suffix.lower() != ".pdf":
+            allowed = source.suffix.lower() == ".pdf" or (
+                kind == "CRS" and source.suffix.lower() in crs_file_types
+            )
+            if not source.is_file() or not allowed:
                 continue
             destination = output / Path(info["path"])
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -117,7 +121,7 @@ def build(output: Path) -> None:
     if logo.is_file():
         (output / "Logo").mkdir(exist_ok=True)
         shutil.copy2(logo, output / "Logo" / "TR.jpg")
-    print(f"Built Pages site: {len(users)} login accounts, {len(records_json)} records, {len(copied['MIR'])} MIR PDFs, {len(copied['WIR'])} WIR PDFs.")
+    print(f"Built Pages site: {len(users)} login accounts, {len(records_json)} records, {len(copied['MIR'])} MIR PDFs, {len(copied['WIR'])} WIR PDFs, {len(copied['CRS'])} CRS attachments.")
 
 
 if __name__ == "__main__":
