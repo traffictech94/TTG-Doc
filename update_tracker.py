@@ -15,6 +15,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent
 WORKBOOK = ROOT / "TTG worksheet for wir and mir.xlsx"
+USERS_WORKBOOK = ROOT / "users.xlsx"
 OUTPUT = ROOT / "home.html"
 STATUS_OPTIONS = ["Just Created", "Not Submitted", "ITP Need", "With Consultant", "No Updates", "Process", "Code-A", "Code-B", "with Doc Controller"]
 
@@ -133,6 +134,42 @@ def attach_matches(records, attachments):
                 rec["commentFile"] = matches[0]
 
 
+def extract_user_names():
+    """Build a local-only username to display-name map, without copying passwords."""
+    if not USERS_WORKBOOK.is_file():
+        return {}
+    users_wb = load_workbook(USERS_WORKBOOK, data_only=True, read_only=True)
+    try:
+        for sheet in users_wb.worksheets:
+            for header_row in range(1, min(sheet.max_row, 10) + 1):
+                headers = {
+                    str(cell.value).strip().casefold(): cell.column
+                    for cell in sheet[header_row]
+                    if cell.value is not None
+                }
+                if "username" not in headers:
+                    continue
+                first_col = headers.get("first name") or headers.get("firstname") or headers.get("first_name")
+                last_col = headers.get("last name") or headers.get("lastname") or headers.get("last_name")
+                if not first_col or not last_col:
+                    continue
+                names = {}
+                for row in range(header_row + 1, sheet.max_row + 1):
+                    username = sheet.cell(row, headers["username"]).value
+                    first_name = sheet.cell(row, first_col).value
+                    last_name = sheet.cell(row, last_col).value
+                    if username is None:
+                        continue
+                    names[str(username).strip().casefold()] = {
+                        "firstName": str(first_name or "").strip(),
+                        "lastName": str(last_name or "").strip(),
+                    }
+                return names
+        return {}
+    finally:
+        users_wb.close()
+
+
 def main():
     if "--initialize-missing-wir" in sys.argv:
         wb = load_workbook(WORKBOOK, data_only=False)
@@ -157,10 +194,11 @@ def main():
     data = {"records": extract_records(wb), "attachments": attachment_index(), "workbook": WORKBOOK.name, "logo": "Logo/TR.jpg"}
     attach_matches(data["records"], data["attachments"])
     json_data = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    user_names_json = json.dumps(extract_user_names(), ensure_ascii=False).replace("</", "<\\/")
     template = ROOT / "tracker_template.html"
     if not template.exists():
         sys.exit("tracker_template.html is missing.")
-    html = template.read_text(encoding="utf-8").replace("__TRACKER_DATA__", json_data)
+    html = template.read_text(encoding="utf-8").replace("__TRACKER_DATA__", json_data).replace("__USER_NAMES__", user_names_json)
     OUTPUT.write_text(html, encoding="utf-8")
     print(f"Updated {OUTPUT.name}: {len(data['records'])} records, "
           f"{len(data['attachments']['MIR'])} MIR PDFs, {len(data['attachments']['WIR'])} WIR PDFs.")

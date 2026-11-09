@@ -130,7 +130,13 @@ class TrackerHandler(SimpleHTTPRequestHandler):
         if urlsplit(self.path).path == "/session":
             session = self._session_details()
             if session:
-                return self.send_json(200, {"ok": True, "username": session.get("username"), "level": session.get("level", 3)})
+                return self.send_json(200, {
+                    "ok": True,
+                    "username": session.get("username"),
+                    "firstName": session.get("firstName", ""),
+                    "lastName": session.get("lastName", ""),
+                    "level": session.get("level", 3),
+                })
             return self.send_json(401, {"ok": False})
         self._serve_page_or_file()
 
@@ -144,14 +150,16 @@ class TrackerHandler(SimpleHTTPRequestHandler):
         try:
             sheet = workbook["Sheet1"] if "Sheet1" in workbook.sheetnames else workbook[workbook.sheetnames[0]]
             header_row = None
-            username_col = password_col = level_col = None
+            username_col = password_col = level_col = first_name_col = last_name_col = None
             for row in range(1, min(sheet.max_row, 10) + 1):
                 headers = {str(cell.value).strip().casefold(): cell.column for cell in sheet[row] if cell.value is not None}
                 if "username" in headers and "password" in headers:
                     header_row = row
                     username_col = headers["username"]
                     password_col = headers["password"]
-                    level_col = headers.get("level")
+                    level_col = headers.get("level") or headers.get("user level") or headers.get("user_level") or headers.get("role")
+                    first_name_col = headers.get("first name") or headers.get("firstname") or headers.get("first_name")
+                    last_name_col = headers.get("last name") or headers.get("lastname") or headers.get("last_name")
                     break
             if not header_row:
                 raise ValueError("username/password columns were not found")
@@ -170,7 +178,15 @@ class TrackerHandler(SimpleHTTPRequestHandler):
                         level = 3
                     if level not in (1, 2, 3):
                         level = 3
-                    return {"username": stored_username, "row": row, "level": level}
+                    first_name = sheet.cell(row, first_name_col).value if first_name_col else ""
+                    last_name = sheet.cell(row, last_name_col).value if last_name_col else ""
+                    return {
+                        "username": stored_username,
+                        "row": row,
+                        "level": level,
+                        "firstName": str(first_name or "").strip(),
+                        "lastName": str(last_name or "").strip(),
+                    }
             return None
         finally:
             workbook.close()
@@ -225,7 +241,13 @@ class TrackerHandler(SimpleHTTPRequestHandler):
                 return self.send_json(401, {"ok": False, "message": "Username or password is incorrect."})
             token = secrets.token_urlsafe(32)
             with SESSION_LOCK:
-                SESSIONS[token] = {"expires": time.time() + SESSION_TTL, "username": account["username"], "level": account["level"]}
+                SESSIONS[token] = {
+                    "expires": time.time() + SESSION_TTL,
+                    "username": account["username"],
+                    "firstName": account.get("firstName", ""),
+                    "lastName": account.get("lastName", ""),
+                    "level": account["level"],
+                }
             log("Login accepted.")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -414,8 +436,8 @@ class TrackerHandler(SimpleHTTPRequestHandler):
         if not self._is_authenticated():
             self.send_json(401, {"error": "Please sign in before updating Excel."})
             return
-        if (self._session_details() or {}).get("level") not in (1, 2):
-            self.send_json(403, {"error": "This account has view-only access."})
+        if (self._session_details() or {}).get("level") != 1:
+            self.send_json(403, {"error": "Only a Level 1 user can update MIR/WIR statuses."})
             return
         if not self._origin_allowed():
             self.send_json(403, {"error": "Requests must come from the local tracker page."})

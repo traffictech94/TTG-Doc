@@ -2,6 +2,7 @@
 Form.xlsx
 TTG worksheet for wir and mir Rev1.xlsx
 tracker_server.log
+~$*.xlsx
 __pycache__/
 *.py[cod]
 _site/

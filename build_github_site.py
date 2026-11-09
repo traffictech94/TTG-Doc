@@ -51,10 +51,24 @@ def load_public_users() -> list[dict[str, object]]:
                         level = 3
                     if level not in (1, 2, 3):
                         level = 3
+                    first_name_column = (
+                        headers.get("first name")
+                        or headers.get("firstname")
+                        or headers.get("first_name")
+                    )
+                    last_name_column = (
+                        headers.get("last name")
+                        or headers.get("lastname")
+                        or headers.get("last_name")
+                    )
+                    first_name = sheet.cell(row, first_name_column).value if first_name_column else ""
+                    last_name = sheet.cell(row, last_name_column).value if last_name_column else ""
                     accounts.append({
                         "username": str(username).strip(),
                         "password": str(password),
                         "level": level,
+                        "firstName": str(first_name or "").strip(),
+                        "lastName": str(last_name or "").strip(),
                     })
                 if accounts:
                     return accounts
