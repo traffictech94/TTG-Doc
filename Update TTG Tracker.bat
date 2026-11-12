@@ -13,6 +13,9 @@ if not exist "%PYTHON%" (
   exit /b 1
 )
 
+rem Stop an older copy of this project's local server so new API routes are loaded.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$scriptPath = [IO.Path]::GetFullPath('%SCRIPT_DIR%tracker_server.py'); Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains($scriptPath) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>nul
+
 "%PYTHON%" "%SCRIPT_DIR%update_tracker.py"
 if errorlevel 1 (
   echo The tracker could not refresh. Check the workbook and folder names.

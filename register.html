@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TTG | Register user</title>
+<style>
+:root{--navy:#12334a;--teal:#155b62;--ink:#192a3a;--muted:#718092;--line:#e1e8eb;--paper:#fff;--canvas:#f4f7f8;--yellow:#ffe500}*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:14px/1.5 "Segoe UI",Arial,sans-serif}.top{background:linear-gradient(120deg,var(--navy),var(--teal));color:#fff;padding:23px max(calc((100vw - 1100px)/2),22px)}.top-inner{max-width:1100px;margin:auto;display:flex;justify-content:space-between;align-items:center;gap:18px}.brand{display:flex;align-items:center;gap:14px}.brand img{width:96px;max-height:62px;object-fit:contain;background:white;border-radius:6px;padding:4px}.brand h1{margin:0;font-size:22px}.brand p{margin:3px 0 0;color:#d2e1e5}.btn{border:1px solid #ffffff61;background:#ffffff12;color:white;border-radius:8px;padding:10px 14px;cursor:pointer;font:650 13px "Segoe UI",Arial,sans-serif;text-decoration:none}.btn:hover{background:var(--yellow);border-color:#e0c900;color:var(--navy)}main{max-width:790px;margin:34px auto;padding:0 18px}.card{background:var(--paper);border:1px solid var(--line);border-radius:14px;box-shadow:0 12px 32px #1832470b;overflow:hidden}.card-head{padding:23px 26px;border-bottom:1px solid var(--line)}.card-head h2{margin:0;font-size:21px}.card-head p{margin:5px 0 0;color:var(--muted)}form{padding:25px 26px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.field label{display:block;margin-bottom:6px;color:#43596a;font-size:12px;font-weight:700}.field input,.field select{width:100%;height:43px;border:1px solid #d7e0e6;border-radius:8px;background:#fff;padding:0 11px;color:var(--ink);font:14px "Segoe UI",Arial,sans-serif}.field input:focus,.field select:focus{outline:0;border-color:#4d9c96;box-shadow:0 0 0 3px #4d9c961f}.field input[readonly]{background:#f4f7f8;color:#718092}.hint{margin-top:5px;color:var(--muted);font-size:11px}.span2{grid-column:1/-1}.actions{display:flex;justify-content:flex-end;gap:10px;margin-top:23px}.actions .btn{background:#fff;color:#334f60;border-color:var(--line)}.actions .primary{background:var(--teal);border-color:var(--teal);color:white}.actions .btn:hover{background:var(--yellow);border-color:#e0c900;color:var(--navy)}.notice{display:none;margin:0 26px 22px;padding:11px 13px;border-radius:8px;background:#eef8f1;color:#21633d}.notice.error{background:#fff1f1;color:#9c303a}.foot{text-align:center;color:var(--muted);font-size:12px;margin:22px 0 30px}@media(max-width:600px){.top-inner{align-items:flex-start;flex-direction:column}.grid{grid-template-columns:1fr}.span2{grid-column:auto}.card-head,form{padding:19px}.notice{margin-left:19px;margin-right:19px}.brand img{width:82px}}
+.top-links{display:flex;gap:9px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<header class="top"><div class="top-inner"><div class="brand"><img src="Logo/TR.jpg" alt="Traffic Tech logo"><div><h1>Register a project user</h1><p>Local user administration · Level 1 only</p></div></div><div class="top-links"><a class="btn" href="userlist.html">User list</a><a class="btn" href="home.html">Back to tracker</a></div></div></header>
+<main><section class="card"><div class="card-head"><h2>New user details</h2><p>Complete the users.xlsx fields below. The user number is assigned automatically.</p></div>
+<form id="registerForm" autocomplete="off">
+<div class="grid">
+<div class="field"><label for="userNo">No.</label><input id="userNo" value="Assigned on save" readonly></div>
+<div class="field"><label for="username">Username *</label><input id="username" name="username" maxlength="100" required autocomplete="off"></div>
+<div class="field"><label for="password">Password *</label><input id="password" name="password" type="password" maxlength="200" required autocomplete="new-password"></div>
+<div class="field"><label for="level">Level *</label><select id="level" name="level" required><option value="" selected disabled>Select access level</option><option value="1">1 — Super Admin</option><option value="2">2 — Standard user</option><option value="3">3 — Read only</option></select></div>
+<div class="field"><label for="firstName">Firstname *</label><input id="firstName" name="firstName" maxlength="100" required autocomplete="given-name"></div>
+<div class="field"><label for="lastName">Lastname *</label><input id="lastName" name="lastName" maxlength="100" required autocomplete="family-name"></div>
+<div class="field span2"><label for="email">Email</label><input id="email" name="email" type="email" maxlength="254" autocomplete="email"><div class="hint">Optional</div></div>
+</div>
+<div class="actions"><a class="btn" href="home.html">Cancel</a><button id="submitBtn" class="btn primary" type="submit">Add user to Excel</button></div>
+</form><div id="notice" class="notice" role="status" aria-live="polite"></div>
+</section><div class="foot">User details are saved locally in users.xlsx.</div></main>
+<script>
+const form=document.getElementById('registerForm'),notice=document.getElementById('notice'),submitBtn=document.getElementById('submitBtn');
+function showNotice(message,error=false){notice.textContent=message;notice.classList.toggle('error',error);notice.style.display='block'}
+async function checkAccess(){try{const response=await fetch('/session',{cache:'no-store'});if(!response.ok){location.replace('/index.html');return false}const session=await response.json();if(Number(session.level)!==1){location.replace('/home.html');return false}return true}catch{location.replace('/index.html');return false}}
+checkAccess();
+form.addEventListener('submit',async event=>{event.preventDefault();if(!form.reportValidity())return;submitBtn.disabled=true;submitBtn.textContent='Saving…';notice.style.display='none';const fields=new FormData(form);try{const response=await fetch('/add-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:fields.get('username'),password:fields.get('password'),firstName:fields.get('firstName'),lastName:fields.get('lastName'),email:fields.get('email'),level:fields.get('level')})});const result=await response.json();if(!response.ok||!result.ok)throw new Error(result.error||'Could not save the user.');form.reset();document.getElementById('userNo').value=`${result.number} (saved)`;showNotice(`User “${result.username}” was added to users.xlsx.`)}catch(error){showNotice(error.message||'Could not save the user. Check that users.xlsx is closed in Excel.',true)}finally{submitBtn.disabled=false;submitBtn.textContent='Add user to Excel'}});
+</script>
+</body>
+</html>

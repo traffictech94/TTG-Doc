@@ -31,6 +31,7 @@ SESSION_TTL = 8 * 60 * 60
 SESSIONS = {}
 SESSION_LOCK = threading.Lock()
 USERS_LOCK = threading.Lock()
+TRACKER_LOCK = threading.Lock()
 ALWAYS_BLOCKED = {
     "users.xlsx",
     "Form.xlsx",
@@ -48,6 +49,32 @@ KEY_RE = re.compile(r"^Sheet1:(\d+)$")
 def log(message):
     with (ROOT / "tracker_server.log").open("a", encoding="utf-8") as stream:
         stream.write(f"{datetime.now().isoformat(timespec='seconds')} {message}\n")
+
+
+def locate_users_header(sheet):
+    aliases = {
+        "no": {"no", "number", "sno", "srno"},
+        "username": {"username", "user name"},
+        "password": {"password", "pass"},
+        "firstName": {"firstname", "first name", "first_name"},
+        "lastName": {"lastname", "last name", "last_name"},
+        "email": {"email", "e-mail", "email address"},
+        "level": {"level", "user level", "user_level", "role"},
+    }
+    for row_idx in range(1, min(sheet.max_row, 10) + 1):
+        columns = {}
+        for cell in sheet[row_idx]:
+            if cell.value is None:
+                continue
+            normalized = re.sub(r"[\s_-]+", "", str(cell.value).strip().casefold())
+            for key, options in aliases.items():
+                normalized_options = {re.sub(r"[\s_-]+", "", item.casefold()) for item in options}
+                if normalized in normalized_options:
+                    columns[key] = cell.column
+        required = {"username", "password", "firstName", "lastName", "email", "level"}
+        if required.issubset(columns):
+            return row_idx, columns
+    raise ValueError("Could not find the required user columns in users.xlsx.")
 
 
 class TrackerHandler(SimpleHTTPRequestHandler):
@@ -138,6 +165,20 @@ class TrackerHandler(SimpleHTTPRequestHandler):
                     "level": session.get("level", 3),
                 })
             return self.send_json(401, {"ok": False})
+        if urlsplit(self.path).path == "/users":
+            return self._handle_list_users()
+        if urlsplit(self.path).path == "/records":
+            return self._handle_list_records()
+        guarded_admin_pages = {"/register.html", "/add_record.html", "/userlist.html", "/recordlist.html"}
+        if urlsplit(self.path).path in guarded_admin_pages:
+            session = self._session_details()
+            if not session:
+                return self._redirect_to_login()
+            if session.get("level") != 1:
+                self.send_response(303)
+                self.send_header("Location", "/home.html")
+                self.end_headers()
+                return
         self._serve_page_or_file()
 
     def do_HEAD(self):
@@ -348,12 +389,20 @@ class TrackerHandler(SimpleHTTPRequestHandler):
 
             saved_names = {}
             folder_map = {"mirFile": "TTG MIR", "wirFile": "TTG WIR", "deliveryFile": "Delivery Notes", "commentFile": "CRS"}
+            crs_extensions = {".pdf", ".xlsx", ".xls", ".docx", ".doc", ".png", ".jpg", ".jpeg"}
             for field, (filename, mime, payload) in uploads.items():
                 if field not in folder_map or not filename:
                     continue
-                if len(payload) > 50 * 1024 * 1024 or (not filename.lower().endswith(".pdf") and mime != "application/pdf"):
-                    raise ValueError(f"{filename} must be a PDF no larger than 50 MB.")
-                safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", filename)
+                suffix = Path(filename).suffix.casefold()
+                is_crs = field == "commentFile"
+                allowed_crs_type = suffix in crs_extensions
+                allowed_pdf_type = suffix == ".pdf" or mime == "application/pdf"
+                if len(payload) > 50 * 1024 * 1024 or not (allowed_crs_type if is_crs else allowed_pdf_type):
+                    allowed_text = "a supported CRS document (PDF, Excel, Word, PNG, or JPG)" if is_crs else "a PDF"
+                    raise ValueError(f"{filename} must be {allowed_text} no larger than 50 MB.")
+                safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename).strip(" .")
+                if not safe_name:
+                    raise ValueError("Attachment filename is not valid.")
                 folder = ROOT / folder_map[field]
                 folder.mkdir(parents=True, exist_ok=True)
                 target = folder / safe_name
@@ -388,11 +437,14 @@ class TrackerHandler(SimpleHTTPRequestHandler):
                     numbers.append(int(str(sheet.cell(old_row, 1).value).strip()))
                 except (ValueError, TypeError):
                     pass
-            sr_no = fields.get("srNo") or str(max(numbers, default=0) + 1)
-            mir = fields.get("mirNumber") or saved_names.get("mirFile", "")
-            wir = fields.get("wirNumber") or saved_names.get("wirFile", "")
-            delivery = fields.get("deliveryNotes") or saved_names.get("deliveryFile", "")
-            comments = fields.get("comments") or saved_names.get("commentFile", "")
+            try:
+                sr_no = int(fields["srNo"]) if fields.get("srNo") else max(numbers, default=0) + 1
+            except ValueError:
+                raise ValueError("Serial number must be a whole number.")
+            mir = Path(saved_names["mirFile"]).stem if saved_names.get("mirFile") else ""
+            wir = Path(saved_names["wirFile"]).stem if saved_names.get("wirFile") else ""
+            delivery = Path(saved_names["deliveryFile"]).stem if saved_names.get("deliveryFile") else ""
+            comments = Path(saved_names["commentFile"]).stem if saved_names.get("commentFile") else ""
             values = {1: sr_no, 2: fields["material"], 11: mir, 12: status_fields["mirStatus"],
                       13: wir, 14: fields.get("items", ""), 15: status_fields["wirStatus"],
                       16: delivery, 17: comments}
@@ -402,7 +454,7 @@ class TrackerHandler(SimpleHTTPRequestHandler):
             workbook.close()
             workbook = None
             update_tracker.main()
-            return self.send_json(200, {"ok": True, "row": row})
+            return self.send_json(200, {"ok": True, "row": row, "number": sr_no})
         except ValueError as exc:
             for path in created_files:
                 path.unlink(missing_ok=True)
@@ -420,6 +472,516 @@ class TrackerHandler(SimpleHTTPRequestHandler):
             if workbook is not None:
                 workbook.close()
 
+    def _handle_add_user(self):
+        session = self._session_details()
+        if not session:
+            return self.send_json(401, {"ok": False, "error": "Please sign in before registering a user."})
+        if session.get("level") != 1:
+            return self.send_json(403, {"ok": False, "error": "Only a Level 1 user can register users."})
+        if not self._origin_allowed():
+            return self.send_json(403, {"ok": False, "error": "This registration request was rejected."})
+        workbook = None
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 1 or length > 16_384:
+                raise ValueError("The registration form could not be read.")
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            fields = {key: payload.get(key, "") for key in ("username", "password", "firstName", "lastName", "email", "level")}
+            if any(not isinstance(value, str) for value in fields.values()):
+                raise ValueError("Enter valid values in all user fields.")
+            fields = {key: value.strip() for key, value in fields.items()}
+            if not all(fields[key] for key in ("username", "password", "firstName", "lastName", "level")):
+                raise ValueError("Complete username, password, first name, last name, and level.")
+            if len(fields["username"]) > 100 or len(fields["password"]) > 200:
+                raise ValueError("Username or password is too long.")
+            if fields["email"] and (len(fields["email"]) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", fields["email"])):
+                raise ValueError("Enter a valid email address, or leave it blank.")
+            if fields["level"] not in ("1", "2", "3"):
+                raise ValueError("Choose user level 1, 2, or 3.")
+
+            aliases = {
+                "no": {"no", "number", "sno", "srno"},
+                "username": {"username", "user name"},
+                "password": {"password", "pass"},
+                "firstName": {"firstname", "first name", "first_name"},
+                "lastName": {"lastname", "last name", "last_name"},
+                "email": {"email", "e-mail", "email address"},
+                "level": {"level", "user level", "user_level", "role"},
+            }
+            with USERS_LOCK:
+                if not USERS_WORKBOOK.is_file():
+                    raise ValueError("users.xlsx was not found in the project folder.")
+                workbook = load_workbook(USERS_WORKBOOK, data_only=False)
+                sheet = workbook["Sheet1"] if "Sheet1" in workbook.sheetnames else workbook[workbook.sheetnames[0]]
+                header_row, columns = None, {}
+                for row_idx in range(1, min(sheet.max_row, 10) + 1):
+                    values = {}
+                    for cell in sheet[row_idx]:
+                        if cell.value is None:
+                            continue
+                        normalized = re.sub(r"[\s_-]+", "", str(cell.value).strip().casefold())
+                        for key, options in aliases.items():
+                            normalized_options = {re.sub(r"[\s_-]+", "", item.casefold()) for item in options}
+                            if normalized in normalized_options:
+                                values[key] = cell.column
+                    if all(key in values for key in ("username", "password", "firstName", "lastName", "email", "level")):
+                        header_row, columns = row_idx, values
+                        break
+                if not header_row:
+                    raise ValueError("Could not find the required user columns in users.xlsx.")
+                username_col = columns["username"]
+                for row_idx in range(header_row + 1, sheet.max_row + 1):
+                    existing = sheet.cell(row_idx, username_col).value
+                    if existing is not None and str(existing).strip().casefold() == fields["username"].casefold():
+                        raise ValueError("That username already exists. Choose another username.")
+                no_col = columns.get("no")
+                next_no = 1
+                if no_col:
+                    existing_numbers = []
+                    for row_idx in range(header_row + 1, sheet.max_row + 1):
+                        try:
+                            existing_numbers.append(int(sheet.cell(row_idx, no_col).value))
+                        except (TypeError, ValueError):
+                            pass
+                    next_no = max(existing_numbers, default=0) + 1
+                target_row = max(header_row + 1, sheet.max_row + 1)
+                for col in range(1, sheet.max_column + 1):
+                    source = sheet.cell(target_row - 1, col)
+                    target = sheet.cell(target_row, col)
+                    if source.has_style:
+                        target._style = copy(source._style)
+                    if source.number_format:
+                        target.number_format = source.number_format
+                row_values = {"no": next_no, **fields}
+                for key, value in row_values.items():
+                    if key in columns:
+                        sheet.cell(target_row, columns[key]).value = value
+                workbook.save(USERS_WORKBOOK)
+                workbook.close()
+                workbook = None
+            log("User registered by Level 1 administrator.")
+            return self.send_json(200, {"ok": True, "number": next_no, "username": fields["username"]})
+        except ValueError as exc:
+            return self.send_json(400, {"ok": False, "error": str(exc)})
+        except PermissionError:
+            return self.send_json(409, {"ok": False, "error": "Close users.xlsx in Excel, then try registering the user again."})
+        except Exception as exc:
+            log(f"User registration error: {type(exc).__name__}")
+            return self.send_json(500, {"ok": False, "error": "The user could not be saved to users.xlsx."})
+        finally:
+            if workbook is not None:
+                workbook.close()
+
+    def _admin_session(self):
+        session = self._session_details()
+        if not session:
+            self.send_json(401, {"ok": False, "error": "Please sign in again."})
+            return None
+        if session.get("level") != 1:
+            self.send_json(403, {"ok": False, "error": "Only a Level 1 user can manage the user list."})
+            return None
+        return session
+
+    def _handle_list_users(self):
+        if not self._admin_session():
+            return
+        workbook = None
+        try:
+            with USERS_LOCK:
+                workbook = load_workbook(USERS_WORKBOOK, data_only=True, read_only=True)
+                sheet = workbook["Sheet1"] if "Sheet1" in workbook.sheetnames else workbook[workbook.sheetnames[0]]
+                header_row, columns = locate_users_header(sheet)
+                rows = []
+                next_number = 1
+                for row_idx in range(header_row + 1, sheet.max_row + 1):
+                    username = sheet.cell(row_idx, columns["username"]).value
+                    password = sheet.cell(row_idx, columns["password"]).value
+                    if username is None or not str(username).strip():
+                        continue
+                    number = sheet.cell(row_idx, columns["no"]).value if "no" in columns else None
+                    if number in (None, ""):
+                        number = next_number
+                    try:
+                        next_number = max(next_number, int(number) + 1)
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        level = int(sheet.cell(row_idx, columns["level"]).value or 3)
+                    except (TypeError, ValueError):
+                        level = 3
+                    rows.append({
+                        "row": row_idx,
+                        "number": number,
+                        "username": str(username).strip(),
+                        "firstName": str(sheet.cell(row_idx, columns["firstName"]).value or "").strip(),
+                        "lastName": str(sheet.cell(row_idx, columns["lastName"]).value or "").strip(),
+                        "email": str(sheet.cell(row_idx, columns["email"]).value or "").strip(),
+                        "level": level if level in (1, 2, 3) else 3,
+                        "passwordSet": password is not None and str(password) != "",
+                    })
+                workbook.close()
+                workbook = None
+            return self.send_json(200, {"ok": True, "users": rows})
+        except Exception as exc:
+            log(f"User list error: {type(exc).__name__}")
+            return self.send_json(500, {"ok": False, "error": "The user list could not be read from users.xlsx."})
+        finally:
+            if workbook is not None:
+                workbook.close()
+
+    def _handle_edit_user(self):
+        admin = self._admin_session()
+        if not admin:
+            return
+        if not self._origin_allowed():
+            return self.send_json(403, {"ok": False, "error": "This user update request was rejected."})
+        workbook = None
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 1 or length > 16_384:
+                raise ValueError("The user update form could not be read.")
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            try:
+                row_idx = int(payload.get("row"))
+            except (TypeError, ValueError):
+                raise ValueError("Select a valid user to edit.")
+            keys = ("username", "firstName", "lastName", "email", "level", "password")
+            fields = {key: payload.get(key, "") for key in keys}
+            if any(not isinstance(value, str) for value in fields.values()):
+                raise ValueError("Enter valid values in the user fields.")
+            fields = {key: value.strip() for key, value in fields.items()}
+            if not all(fields[key] for key in ("username", "firstName", "lastName", "level")):
+                raise ValueError("Username, first name, last name, and level are required.")
+            if fields["level"] not in ("1", "2", "3"):
+                raise ValueError("Choose user level 1, 2, or 3.")
+            if fields["email"] and (len(fields["email"]) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", fields["email"])):
+                raise ValueError("Enter a valid email address, or leave it blank.")
+            if len(fields["username"]) > 100 or len(fields["password"]) > 200:
+                raise ValueError("Username or password is too long.")
+
+            old_username = ""
+            with USERS_LOCK:
+                workbook = load_workbook(USERS_WORKBOOK, data_only=False)
+                sheet = workbook["Sheet1"] if "Sheet1" in workbook.sheetnames else workbook[workbook.sheetnames[0]]
+                header_row, columns = locate_users_header(sheet)
+                if row_idx <= header_row or row_idx > sheet.max_row:
+                    raise ValueError("The selected user row no longer exists. Refresh the list and try again.")
+                old_username = str(sheet.cell(row_idx, columns["username"]).value or "").strip()
+                if not old_username:
+                    raise ValueError("The selected user row is empty. Refresh the list and try again.")
+                try:
+                    old_level = int(sheet.cell(row_idx, columns["level"]).value or 3)
+                except (TypeError, ValueError):
+                    old_level = 3
+                if old_username.casefold() == str(admin.get("username", "")).casefold() and fields["level"] != "1":
+                    raise ValueError("Use another Level 1 account to change your own access level.")
+                if old_level == 1 and fields["level"] != "1":
+                    level_one_count = 0
+                    for check_row in range(header_row + 1, sheet.max_row + 1):
+                        name = sheet.cell(check_row, columns["username"]).value
+                        try:
+                            level = int(sheet.cell(check_row, columns["level"]).value or 3)
+                        except (TypeError, ValueError):
+                            level = 3
+                        if name is not None and str(name).strip() and level == 1:
+                            level_one_count += 1
+                    if level_one_count <= 1:
+                        raise ValueError("You cannot downgrade the last Level 1 account.")
+                for check_row in range(header_row + 1, sheet.max_row + 1):
+                    other = str(sheet.cell(check_row, columns["username"]).value or "").strip()
+                    if check_row != row_idx and other.casefold() == fields["username"].casefold():
+                        raise ValueError("That username already exists. Choose another username.")
+                for key in ("username", "firstName", "lastName", "email"):
+                    sheet.cell(row_idx, columns[key]).value = fields[key]
+                sheet.cell(row_idx, columns["level"]).value = int(fields["level"])
+                if fields["password"]:
+                    sheet.cell(row_idx, columns["password"]).value = fields["password"]
+                workbook.save(USERS_WORKBOOK)
+                workbook.close()
+                workbook = None
+
+            token = self._session_token()
+            with SESSION_LOCK:
+                for other_token, active in list(SESSIONS.items()):
+                    if not isinstance(active, dict) or str(active.get("username", "")).casefold() != old_username.casefold():
+                        continue
+                    if old_username.casefold() == str(admin.get("username", "")).casefold() and other_token == token:
+                        active.update({"username": fields["username"], "firstName": fields["firstName"],
+                                       "lastName": fields["lastName"], "level": int(fields["level"])})
+                    else:
+                        SESSIONS.pop(other_token, None)
+            log("User account updated by Level 1 administrator.")
+            return self.send_json(200, {"ok": True})
+        except ValueError as exc:
+            return self.send_json(400, {"ok": False, "error": str(exc)})
+        except PermissionError:
+            return self.send_json(409, {"ok": False, "error": "Close users.xlsx in Excel, then try saving the user changes."})
+        except Exception as exc:
+            log(f"User update error: {type(exc).__name__}")
+            return self.send_json(500, {"ok": False, "error": "The user changes could not be saved."})
+        finally:
+            if workbook is not None:
+                workbook.close()
+
+    def _handle_delete_user(self):
+        admin = self._admin_session()
+        if not admin:
+            return
+        if not self._origin_allowed():
+            return self.send_json(403, {"ok": False, "error": "This user deletion request was rejected."})
+        workbook = None
+        target_username = ""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 1 or length > 4_096:
+                raise ValueError("The user deletion request could not be read.")
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            try:
+                row_idx = int(payload.get("row"))
+            except (TypeError, ValueError):
+                raise ValueError("Select a valid user to delete.")
+            with USERS_LOCK:
+                workbook = load_workbook(USERS_WORKBOOK, data_only=False)
+                sheet = workbook["Sheet1"] if "Sheet1" in workbook.sheetnames else workbook[workbook.sheetnames[0]]
+                header_row, columns = locate_users_header(sheet)
+                if row_idx <= header_row or row_idx > sheet.max_row:
+                    raise ValueError("The selected user row no longer exists. Refresh the list and try again.")
+                target_username = str(sheet.cell(row_idx, columns["username"]).value or "").strip()
+                if not target_username:
+                    raise ValueError("The selected user row is empty. Refresh the list and try again.")
+                if target_username.casefold() == str(admin.get("username", "")).casefold():
+                    raise ValueError("You cannot delete the account you are currently using.")
+                level_one_count = 0
+                for check_row in range(header_row + 1, sheet.max_row + 1):
+                    name = sheet.cell(check_row, columns["username"]).value
+                    try:
+                        level = int(sheet.cell(check_row, columns["level"]).value or 3)
+                    except (TypeError, ValueError):
+                        level = 3
+                    if name is not None and str(name).strip() and level == 1:
+                        level_one_count += 1
+                try:
+                    target_level = int(sheet.cell(row_idx, columns["level"]).value or 3)
+                except (TypeError, ValueError):
+                    target_level = 3
+                if target_level == 1 and level_one_count <= 1:
+                    raise ValueError("You cannot delete the last Level 1 account.")
+                sheet.delete_rows(row_idx, 1)
+                workbook.save(USERS_WORKBOOK)
+                workbook.close()
+                workbook = None
+            with SESSION_LOCK:
+                for other_token, active in list(SESSIONS.items()):
+                    if isinstance(active, dict) and str(active.get("username", "")).casefold() == target_username.casefold():
+                        SESSIONS.pop(other_token, None)
+            log("User account deleted by Level 1 administrator.")
+            return self.send_json(200, {"ok": True})
+        except ValueError as exc:
+            return self.send_json(400, {"ok": False, "error": str(exc)})
+        except PermissionError:
+            return self.send_json(409, {"ok": False, "error": "Close users.xlsx in Excel, then try deleting the user again."})
+        except Exception as exc:
+            log(f"User deletion error: {type(exc).__name__}")
+            return self.send_json(500, {"ok": False, "error": "The user could not be deleted from users.xlsx."})
+        finally:
+            if workbook is not None:
+                workbook.close()
+
+    def _handle_list_records(self):
+        if not self._admin_session():
+            return
+        workbook = None
+        try:
+            with TRACKER_LOCK:
+                workbook = load_workbook(WORKBOOK, data_only=True, read_only=True)
+                records = update_tracker.extract_records(workbook)
+                workbook.close()
+                workbook = None
+                attachments = update_tracker.attachment_index()
+                update_tracker.attach_matches(records, attachments)
+            result = [{
+                "row": int(rec["row"]),
+                "number": rec.get("number", ""),
+                "description": rec.get("description", ""),
+                "mir": rec.get("mir", ""),
+                "mirStatus": rec.get("mirStatus", "Process"),
+                "wir": rec.get("wir", ""),
+                "items": rec.get("item", ""),
+                "wirStatus": rec.get("wirStatus", "Process"),
+                "delivery": rec.get("delivery", ""),
+                "comments": rec.get("comments", ""),
+                "files": rec.get("files", []),
+                "deliveryFile": rec.get("deliveryFile"),
+                "commentFile": rec.get("commentFile"),
+            } for rec in records]
+            return self.send_json(200, {"ok": True, "records": result})
+        except Exception as exc:
+            log(f"Record list error: {type(exc).__name__}")
+            return self.send_json(500, {"ok": False, "error": "The record list could not be read from the tracker workbook."})
+        finally:
+            if workbook is not None:
+                workbook.close()
+
+    def _handle_edit_record(self):
+        admin = self._admin_session()
+        if not admin:
+            return
+        if not self._origin_allowed():
+            return self.send_json(403, {"ok": False, "error": "This record update request was rejected."})
+        workbook = None
+        created_files = []
+        workbook_saved = False
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            content_type = self.headers.get("Content-Type", "")
+            if length < 1 or length > 220 * 1024 * 1024 or not content_type.lower().startswith("multipart/form-data"):
+                raise ValueError("The record update form could not be read.")
+            body = self.rfile.read(length)
+            message = BytesParser(policy=policy.default).parsebytes(
+                f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("ascii") + body
+            )
+            fields, uploads = {}, {}
+            for part in message.iter_parts():
+                name = part.get_param("name", header="content-disposition")
+                if not name:
+                    continue
+                filename = part.get_filename()
+                data = part.get_payload(decode=True) or b""
+                if filename:
+                    uploads[name] = (Path(filename).name, part.get_content_type(), data)
+                else:
+                    fields[name] = data.decode(part.get_content_charset() or "utf-8", errors="replace").strip()
+            try:
+                row = int(fields.get("row", ""))
+            except (TypeError, ValueError):
+                raise ValueError("Select a valid record to edit.")
+            field_limits = {"description": 10_000, "mir": 500, "wir": 500, "items": 10_000,
+                            "delivery": 1_000, "comments": 3_000}
+            for key in (*field_limits, "mirStatus", "wirStatus"):
+                fields[key] = str(fields.get(key, "")).strip()
+            if not fields["description"]:
+                raise ValueError("Material & Location is required.")
+            for key, max_length in field_limits.items():
+                if len(fields[key]) > max_length:
+                    raise ValueError(f"{key.capitalize()} is too long.")
+            if fields["mirStatus"] not in VALID_STATUSES or fields["wirStatus"] not in VALID_STATUSES:
+                raise ValueError("Choose valid MIR and WIR statuses.")
+
+            folder_map = {"mirFile": "TTG MIR", "wirFile": "TTG WIR", "deliveryFile": "Delivery Notes", "commentFile": "CRS"}
+            crs_extensions = {".pdf", ".xlsx", ".xls", ".docx", ".doc", ".png", ".jpg", ".jpeg"}
+            for file_field, (filename, mime, data) in uploads.items():
+                if file_field not in folder_map:
+                    continue
+                suffix = Path(filename).suffix.casefold()
+                is_crs = file_field == "commentFile"
+                valid_type = suffix in crs_extensions if is_crs else (suffix == ".pdf" or mime == "application/pdf")
+                if len(data) > 50 * 1024 * 1024 or not valid_type:
+                    allowed_text = "a supported CRS document (PDF, Excel, Word, PNG, or JPG)" if is_crs else "a PDF"
+                    raise ValueError(f"{filename} must be {allowed_text} no larger than 50 MB.")
+
+            for file_field, (filename, mime, data) in uploads.items():
+                if file_field not in folder_map:
+                    continue
+                safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename).strip(" .")
+                if not safe_name:
+                    raise ValueError("Attachment filename is not valid.")
+                if Path(safe_name).suffix == "":
+                    safe_name += ".pdf"
+                folder = ROOT / folder_map[file_field]
+                folder.mkdir(parents=True, exist_ok=True)
+                target = folder / safe_name
+                if target.exists():
+                    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                    target = folder / f"{target.stem}_{stamp}{target.suffix}"
+                target.write_bytes(data)
+                created_files.append(target)
+                ref_field = {"mirFile": "mir", "wirFile": "wir", "deliveryFile": "delivery", "commentFile": "comments"}[file_field]
+                fields[ref_field] = target.stem
+
+            with TRACKER_LOCK:
+                workbook = load_workbook(WORKBOOK, data_only=False)
+                sheet = workbook["Sheet1"]
+                header = update_tracker.find_header(sheet, ["sr. no", "material", "mir", "wir"])
+                if not header:
+                    raise ValueError("Could not locate the MIR/WIR table in Sheet1.")
+                current_records = update_tracker.extract_records(workbook)
+                if row <= header or not any(int(rec["row"]) == row for rec in current_records):
+                    raise ValueError("The selected record no longer exists. Refresh the list and try again.")
+                values = {2: fields["description"], 11: fields["mir"], 12: fields["mirStatus"],
+                          13: fields["wir"], 14: fields["items"], 15: fields["wirStatus"],
+                          16: fields["delivery"], 17: fields["comments"]}
+                for col, value in values.items():
+                    sheet.cell(row, col).value = value
+                workbook.save(WORKBOOK)
+                workbook.close()
+                workbook = None
+                workbook_saved = True
+            update_tracker.main()
+            log("Tracker record updated by Level 1 administrator.")
+            return self.send_json(200, {"ok": True, "references": {key: fields[key] for key in ("mir", "wir", "delivery", "comments")}})
+        except ValueError as exc:
+            if not workbook_saved:
+                for path in created_files:
+                    path.unlink(missing_ok=True)
+            return self.send_json(400, {"ok": False, "error": str(exc)})
+        except PermissionError:
+            if not workbook_saved:
+                for path in created_files:
+                    path.unlink(missing_ok=True)
+            return self.send_json(409, {"ok": False, "error": "Close the tracker workbook in Excel, then save the record again."})
+        except Exception as exc:
+            if not workbook_saved:
+                for path in created_files:
+                    path.unlink(missing_ok=True)
+            log(f"Record update error: {type(exc).__name__}")
+            return self.send_json(500, {"ok": False, "error": "The record changes could not be saved."})
+        finally:
+            if workbook is not None:
+                workbook.close()
+
+    def _handle_delete_record(self):
+        admin = self._admin_session()
+        if not admin:
+            return
+        if not self._origin_allowed():
+            return self.send_json(403, {"ok": False, "error": "This record deletion request was rejected."})
+        workbook = None
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 1 or length > 4_096:
+                raise ValueError("The record deletion request could not be read.")
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            try:
+                row = int(payload.get("row"))
+            except (TypeError, ValueError):
+                raise ValueError("Select a valid record to delete.")
+            with TRACKER_LOCK:
+                workbook = load_workbook(WORKBOOK, data_only=False)
+                sheet = workbook["Sheet1"]
+                header = update_tracker.find_header(sheet, ["sr. no", "material", "mir", "wir"])
+                if not header:
+                    raise ValueError("Could not locate the MIR/WIR table in Sheet1.")
+                current_records = update_tracker.extract_records(workbook)
+                if row <= header or not any(int(rec["row"]) == row for rec in current_records):
+                    raise ValueError("The selected record no longer exists. Refresh the list and try again.")
+                sheet.delete_rows(row, 1)
+                workbook.save(WORKBOOK)
+                workbook.close()
+                workbook = None
+            update_tracker.main()
+            log("Tracker record deleted by Level 1 administrator.")
+            return self.send_json(200, {"ok": True})
+        except ValueError as exc:
+            return self.send_json(400, {"ok": False, "error": str(exc)})
+        except PermissionError:
+            return self.send_json(409, {"ok": False, "error": "Close the tracker workbook in Excel, then try deleting the record."})
+        except Exception as exc:
+            log(f"Record deletion error: {type(exc).__name__}")
+            return self.send_json(500, {"ok": False, "error": "The record could not be deleted from the tracker workbook."})
+        finally:
+            if workbook is not None:
+                workbook.close()
+
     def do_POST(self):
         route = urlsplit(self.path).path
         if route == "/login":
@@ -430,6 +992,16 @@ class TrackerHandler(SimpleHTTPRequestHandler):
             return self._handle_change_password()
         if route == "/add-record":
             return self._handle_add_record()
+        if route == "/edit-record":
+            return self._handle_edit_record()
+        if route == "/delete-record":
+            return self._handle_delete_record()
+        if route == "/add-user":
+            return self._handle_add_user()
+        if route == "/edit-user":
+            return self._handle_edit_user()
+        if route == "/delete-user":
+            return self._handle_delete_user()
         if route != "/update":
             self.send_json(404, {"error": "Unknown endpoint."})
             return
