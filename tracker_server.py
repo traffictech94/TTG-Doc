@@ -44,6 +44,7 @@ ALWAYS_BLOCKED = {
 }
 VALID_STATUSES = {"Just Created", "Not Submitted", "ITP Need", "With Consultant", "No Updates", "Process", "Code-A", "Code-B", "with Doc Controller"}
 KEY_RE = re.compile(r"^Sheet1:(\d+)$")
+REVISION_SUFFIX_RE = re.compile(r"^(?P<base>.+?)(?:[_\s-]+Rev(?P<revision>\d+)|_(?P<legacy_timestamp>\d{14}))$", re.IGNORECASE)
 
 
 def log(message):
@@ -75,6 +76,41 @@ def locate_users_header(sheet):
         if required.issubset(columns):
             return row_idx, columns
     raise ValueError("Could not find the required user columns in users.xlsx.")
+
+
+def attachment_revision_part(stem):
+    match = REVISION_SUFFIX_RE.fullmatch(stem)
+    if not match:
+        return stem, None, False
+    if match.group("revision") is not None:
+        return match.group("base"), int(match.group("revision")), False
+    return match.group("base"), None, True
+
+
+def duplicate_attachment_info(folder, filename):
+    """Return same-name/revision-family files and the existing file to reuse."""
+    source = Path(filename)
+    base_stem, _, _ = attachment_revision_part(source.stem)
+    matches = []
+    if not folder.exists():
+        return None
+    for existing in folder.iterdir():
+        if not existing.is_file() or existing.suffix.casefold() != source.suffix.casefold():
+            continue
+        existing_base, revision, is_legacy = attachment_revision_part(existing.stem)
+        if existing_base.casefold() != base_stem.casefold():
+            continue
+        matches.append((existing, revision, is_legacy))
+    if not matches:
+        return None
+    exact = next((item for item in matches if item[0].name.casefold() == source.name.casefold()), None)
+    original = next((item for item in matches if item[1] is None and not item[2]), None)
+    versioned = [item for item in matches if item[1] is not None]
+    reusable = exact or original or (max(versioned, key=lambda item: item[1]) if versioned else sorted(matches, key=lambda item: item[0].name.casefold())[-1])
+    return {
+        "existingNames": sorted((item[0].name for item in matches), key=str.casefold),
+        "reuseName": reusable[0].name,
+    }
 
 
 class TrackerHandler(SimpleHTTPRequestHandler):
@@ -390,6 +426,7 @@ class TrackerHandler(SimpleHTTPRequestHandler):
             saved_names = {}
             folder_map = {"mirFile": "TTG MIR", "wirFile": "TTG WIR", "deliveryFile": "Delivery Notes", "commentFile": "CRS"}
             crs_extensions = {".pdf", ".xlsx", ".xls", ".docx", ".doc", ".png", ".jpg", ".jpeg"}
+            upload_plans = []
             for field, (filename, mime, payload) in uploads.items():
                 if field not in folder_map or not filename:
                     continue
@@ -403,14 +440,27 @@ class TrackerHandler(SimpleHTTPRequestHandler):
                 safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename).strip(" .")
                 if not safe_name:
                     raise ValueError("Attachment filename is not valid.")
+                if not is_crs and Path(safe_name).suffix == "":
+                    safe_name += ".pdf"
                 folder = ROOT / folder_map[field]
                 folder.mkdir(parents=True, exist_ok=True)
-                target = folder / safe_name
-                if target.exists():
-                    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-                    target = folder / f"{target.stem}_{stamp}{target.suffix}"
-                target.write_bytes(payload)
-                created_files.append(target)
+                upload_plans.append((field, folder, safe_name, payload))
+
+            duplicate_uploads = []
+            for field, folder, safe_name, _ in upload_plans:
+                duplicate = duplicate_attachment_info(folder, safe_name)
+                if duplicate:
+                    duplicate_uploads.append({"field": field, "filename": safe_name, **duplicate})
+            if duplicate_uploads and fields.get("confirmDuplicates") != "1":
+                return self.send_json(409, {"ok": False, "code": "duplicate_files", "duplicates": duplicate_uploads})
+
+            for field, folder, safe_name, payload in upload_plans:
+                duplicate = duplicate_attachment_info(folder, safe_name)
+                target_name = duplicate["reuseName"] if duplicate and fields.get("confirmDuplicates") == "1" else safe_name
+                target = folder / target_name
+                if not duplicate:
+                    target.write_bytes(payload)
+                    created_files.append(target)
                 saved_names[field] = target.name
 
             workbook = load_workbook(WORKBOOK, data_only=False)
@@ -869,6 +919,7 @@ class TrackerHandler(SimpleHTTPRequestHandler):
 
             folder_map = {"mirFile": "TTG MIR", "wirFile": "TTG WIR", "deliveryFile": "Delivery Notes", "commentFile": "CRS"}
             crs_extensions = {".pdf", ".xlsx", ".xls", ".docx", ".doc", ".png", ".jpg", ".jpeg"}
+            upload_plans = []
             for file_field, (filename, mime, data) in uploads.items():
                 if file_field not in folder_map:
                     continue
@@ -878,23 +929,30 @@ class TrackerHandler(SimpleHTTPRequestHandler):
                 if len(data) > 50 * 1024 * 1024 or not valid_type:
                     allowed_text = "a supported CRS document (PDF, Excel, Word, PNG, or JPG)" if is_crs else "a PDF"
                     raise ValueError(f"{filename} must be {allowed_text} no larger than 50 MB.")
-
-            for file_field, (filename, mime, data) in uploads.items():
-                if file_field not in folder_map:
-                    continue
                 safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename).strip(" .")
                 if not safe_name:
                     raise ValueError("Attachment filename is not valid.")
-                if Path(safe_name).suffix == "":
+                if not is_crs and Path(safe_name).suffix == "":
                     safe_name += ".pdf"
                 folder = ROOT / folder_map[file_field]
                 folder.mkdir(parents=True, exist_ok=True)
-                target = folder / safe_name
-                if target.exists():
-                    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-                    target = folder / f"{target.stem}_{stamp}{target.suffix}"
-                target.write_bytes(data)
-                created_files.append(target)
+                upload_plans.append((file_field, folder, safe_name, data))
+
+            duplicate_uploads = []
+            for file_field, folder, safe_name, _ in upload_plans:
+                duplicate = duplicate_attachment_info(folder, safe_name)
+                if duplicate:
+                    duplicate_uploads.append({"field": file_field, "filename": safe_name, **duplicate})
+            if duplicate_uploads and fields.get("confirmDuplicates") != "1":
+                return self.send_json(409, {"ok": False, "code": "duplicate_files", "duplicates": duplicate_uploads})
+
+            for file_field, folder, safe_name, data in upload_plans:
+                duplicate = duplicate_attachment_info(folder, safe_name)
+                target_name = duplicate["reuseName"] if duplicate and fields.get("confirmDuplicates") == "1" else safe_name
+                target = folder / target_name
+                if not duplicate:
+                    target.write_bytes(data)
+                    created_files.append(target)
                 ref_field = {"mirFile": "mir", "wirFile": "wir", "deliveryFile": "delivery", "commentFile": "comments"}[file_field]
                 fields[ref_field] = target.stem
 
