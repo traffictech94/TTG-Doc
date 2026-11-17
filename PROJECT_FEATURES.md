@@ -41,7 +41,9 @@ Project reference notes for maintenance, handover, and future updates.
 - Tracker rows are read from `Sheet1` of the main workbook; the row serial number is retained when a row is edited.
 - Search covers description, item/notes, MIR and WIR references, delivery note, and comments/CRS text.
 - Filters include record group, status, and the Items / Notes dropdown.
+- Record number can be sorted in either direction: newest/highest first or oldest/lowest first. Newest/highest is the default.
 - The home table shows 10 records per page and provides numbered pagination with next/last navigation when more records match.
+- A top-right Notifications menu lists the three most recently modified/committed attachments across MIR, WIR, Delivery Notes, and CRS. Each entry opens the attachment; long MIR/WIR names use a short label and retain the full filename on hover.
 - MIR/WIR references are presented with compact labels such as `MIR-ITS-0018` and `WIR-ITS-0094`; hovering a link reveals its full reference, and matching PDFs open in a new tab.
 - Descriptions remain visible in the table. Item/notes are available from the workbook for searching and filtering and as description hover context.
 - Level 1 can change MIR/WIR statuses in the page, review staged changes, then choose **Update Excel** to write those status changes to the workbook.
@@ -71,6 +73,7 @@ Project reference notes for maintenance, handover, and future updates.
 ## GitHub Pages deployment and limitations
 
 - The GitHub Actions workflow builds a static site from the committed workbook and document folders, then publishes it under the repository's GitHub Pages URL.
+- The static build uses Git history to order recent attachment notifications; the laptop editor uses each file's local modified time.
 - Pushing updated source files to `main` starts the Pages workflow automatically; a successful workflow run indicates deployment completed. A manual workflow run is also available.
 - The published site is a read-only snapshot: users can search, filter, paginate, and open published attachments, but cannot save status changes or write to Excel.
 - Static hosting cannot run `tracker_server.py` or the Windows `.bat` launcher. Add/edit/delete, user administration, and password changes therefore work only in the local editor.
@@ -87,3 +90,5 @@ Project reference notes for maintenance, handover, and future updates.
 - After pushing, check **Actions → Publish static TTG viewer** for a successful deployment, then check the GitHub Pages site.
 - Do not commit temporary Excel lock files (`~$*.xlsx`), Python caches, generated `_site` output, or `Form.xlsx`.
 -   
+## Newly added features to add Notification pannel and Dec Asc Order filter.
+

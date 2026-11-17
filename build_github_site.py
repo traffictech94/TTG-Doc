@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -14,6 +15,34 @@ WORKBOOK = ROOT / "TTG worksheet for wir and mir.xlsx"
 USERS_WORKBOOK = ROOT / "users.xlsx"
 TEMPLATE = ROOT / "github_static_viewer.html"
 LOGIN_TEMPLATE = ROOT / "index.html"
+
+
+def latest_attachment_commit_times() -> dict[str, float]:
+    """Use repository history for static-site recency; fall back to file mtimes."""
+    try:
+        result = subprocess.run(
+            ["git", "log", "--format=@@%ct", "--name-only", "--", "TTG MIR", "TTG WIR", "Delivery Notes", "CRS"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return {}
+    latest: dict[str, float] = {}
+    timestamp = 0.0
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("@@"):
+            try:
+                timestamp = float(line[2:])
+            except ValueError:
+                timestamp = 0.0
+        elif line and timestamp:
+            latest.setdefault(line.replace("\\", "/"), timestamp)
+    return latest
 
 
 def load_public_users() -> list[dict[str, object]]:
@@ -96,6 +125,10 @@ def build(output: Path) -> None:
     finally:
         workbook.close()
     attachments = update_tracker.attachment_index()
+    commit_times = latest_attachment_commit_times()
+    for files in attachments.values():
+        for info in files:
+            info["modified"] = commit_times.get(info["path"], info.get("modified", 0))
     update_tracker.attach_matches(records, attachments)
 
     copied = {"MIR": [], "WIR": [], "Delivery": [], "CRS": []}

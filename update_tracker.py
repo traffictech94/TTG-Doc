@@ -57,7 +57,11 @@ def attachment_index():
         if folder.exists():
             for path in sorted(folder.rglob(pattern), key=lambda p: p.name.lower()):
                 if path.is_file():
-                    found[kind].append({"name": path.name, "path": path.relative_to(ROOT).as_posix()})
+                    found[kind].append({
+                        "name": path.name,
+                        "path": path.relative_to(ROOT).as_posix(),
+                        "modified": path.stat().st_mtime,
+                    })
     return found
 
 
