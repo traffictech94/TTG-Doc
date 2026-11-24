@@ -10,7 +10,15 @@
 </style>
 <style>
 .submit:hover,.popup button:hover{background:#ffe500;color:#12334a;box-shadow:0 5px 14px #12334a24}.submit:focus-visible,.popup button:focus-visible,.show-password:focus-visible{outline:3px solid #ffe500;outline-offset:3px}
+.login-actions{display:flex;align-items:center;gap:11px}.login-actions .submit{width:auto;flex:1}.theme-toggle-login{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:8px;flex:0 0 auto;width:auto;min-width:132px;height:51px;padding:0 12px 0 43px;border:1px solid #d5e0e6;border-radius:10px;background:#f7fafb;color:#274557;font:650 12px "Segoe UI",Arial,sans-serif;box-shadow:none}.theme-toggle-login svg{display:none}.theme-toggle-login:before{content:"";position:absolute;left:10px;top:50%;width:27px;height:16px;transform:translateY(-50%);border-radius:999px;background:#9aabb5;transition:background .18s ease}.theme-toggle-login:after{content:"";position:absolute;left:12px;top:50%;width:12px;height:12px;transform:translateY(-50%);border-radius:50%;background:#fff;box-shadow:0 1px 3px #102e3f40;transition:left .18s ease}.theme-toggle-login[aria-pressed="true"]{border-color:#347d78;background:#e8f4f2;color:#164b50}.theme-toggle-login[aria-pressed="true"]:before{background:#277d76}.theme-toggle-login[aria-pressed="true"]:after{left:23px}.theme-toggle-login:hover{transform:translateY(-1px);border-color:#e0c900;background:#fff9c7;color:#12334a}.theme-toggle-login:focus-visible{outline:3px solid #ffe500;outline-offset:3px}html[data-theme="dark"] .theme-toggle-login{border-color:#526574;background:#263744;color:#e5edf4}html[data-theme="dark"] .theme-toggle-login[aria-pressed="true"]{border-color:#43808b;background:#203f46;color:#c6f0eb}html[data-theme="dark"] .theme-toggle-login:hover{background:#ffe500;color:#192a3a}@media(max-width:380px){.login-actions{gap:7px}.theme-toggle-login{min-width:116px;padding-right:8px;font-size:11px}}
 </style>
+<style>
+.login-actions{display:flex;flex-direction:column;align-items:stretch;gap:10px}
+.login-actions .submit{width:100%;flex:none}
+.theme-toggle-login{align-self:center;height:40px;min-width:142px;padding-left:43px;border-radius:999px}
+</style>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem('ttg-theme')==='dark'?'dark':'light'}catch{document.documentElement.dataset.theme='light'}</script>
+<link rel="stylesheet" href="shared-ui.css">
 </head>
 <body>
 <main class="page">
@@ -26,7 +34,10 @@
       <form id="loginForm" autocomplete="on">
         <div class="field"><label for="username">Username</label><div class="input-wrap"><input id="username" name="username" type="text" autocomplete="username" placeholder="Enter your username" required autofocus></div></div>
         <div class="field"><label for="password">Password</label><div class="input-wrap"><input class="password-input" id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required><button class="show-password" id="togglePassword" type="button" aria-label="Show password">Show</button></div></div>
-        <button class="submit" id="submitButton" type="submit">Sign in</button>
+        <div class="login-actions">
+          <button class="submit" id="submitButton" type="submit">Sign in</button>
+          <button id="themeToggle" class="theme-toggle theme-toggle-login" type="button" aria-label="Switch to dark mode" aria-pressed="false" title="Switch to dark mode"></button>
+        </div>
       </form>
       <p class="secure-note"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><path d="M12 14v3"/></svg><span id="signInNote">Your account is checked by the project sign-in service.</span></p>
       <div class="copyright">Copy Rights © 2026 Nasarudheen Sha - Traffic Tech · KSA</div>
@@ -44,5 +55,6 @@ if(isGitHubPages)document.getElementById('signInNote').textContent='Sign-in uses
 form.addEventListener('submit',async event=>{event.preventDefault();if(location.protocol==='file:'){showError('Open this page with Update TTG Tracker.bat so it can check users.xlsx.');return}submitButton.disabled=true;submitButton.textContent='Checking…';try{const username=document.getElementById('username').value.trim(),password=document.getElementById('password').value;if(isGitHubPages){const response=await fetch('./users.json',{cache:'no-store'});if(!response.ok)throw new Error('The published account list is missing. Add users.xlsx to the GitHub repository and publish again.');const accounts=await response.json(),account=accounts.find(a=>String(a.username||'').trim().toLowerCase()===username.toLowerCase()&&String(a.password??'')===password);if(!account)throw new Error('Username or password is incorrect.');sessionStorage.setItem('ttgSession',JSON.stringify({username:account.username,firstName:account.firstName||'',lastName:account.lastName||'',level:Number(account.level)||3}));location.replace('./home.html');return}const response=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});const result=await response.json();if(!response.ok||!result.ok)throw new Error(result.message||'Username or password is incorrect.');location.replace('/home.html')}catch(error){showError(error.message==='Failed to fetch'?'The sign-in service is unavailable. Start the local editor using Update TTG Tracker.bat and try again.':error.message||'Unable to sign in. Please try again.')}finally{submitButton.disabled=false;submitButton.textContent='Sign in'}});
 if(location.protocol==='file:'){const side=document.querySelector('.form-side');side.innerHTML='<div class="login-card" style="text-align:center"><h2 class="form-heading">Opening secure sign-in…</h2><p class="form-sub">Connecting to the local Traffic Tech tracker.</p></div>';const probe=new Image();probe.onload=()=>location.replace('http://127.0.0.1:8767/');probe.onerror=()=>{side.innerHTML='<div class="login-card"><h2 class="form-heading">Start the local editor</h2><p class="form-sub">Double-click <b>Update TTG Tracker.bat</b> in your project folder. The GitHub viewer does not need this local service.</p><a class="submit" href="http://127.0.0.1:8767/" style="display:grid;place-items:center;text-decoration:none">Try the sign-in page</a></div>'};probe.src='http://127.0.0.1:8767/Logo/TR.jpg?check='+Date.now()}
 </script>
+<script src="shared-ui.js"></script>
 </body>
 </html>

@@ -21,6 +21,7 @@ Project reference notes for maintenance, handover, and future updates.
 - `recordlist.html` — Level 1 list for searching, editing, or deleting tracker rows (local editor only).
 - `register.html` — Level 1 form for adding a user to `users.xlsx` (local editor only).
 - `userlist.html` — Level 1 user list for searching, editing, or deleting users (local editor only).
+- `shared-ui.css` and `shared-ui.js` — shared light/dark theme, theme persistence, and one-open-dropdown behavior across pages.
 - `tracker_server.py` — local HTTP service and Excel/file operations.
 - `update_tracker.py` — reads the workbook, indexes attachment folders, and builds/refreshes tracker data.
 - `Update TTG Tracker.bat` — Windows launcher for the local editor/service.
@@ -30,11 +31,11 @@ Project reference notes for maintenance, handover, and future updates.
 
 - User fields are read from `users.xlsx`: number, username, password, first name, last name, email, and level.
 - The signed-in user's first and last name and an `L-1`, `L-2`, or `L-3` label appear in the tracker header when those name fields are present.
-- **Level 1 — Super Admin:** can stage MIR/WIR status changes and save them to Excel; add, edit, and delete tracker records; register users; and manage the user list.
-- **Level 2 — Standard user:** read-only tracker access.
-- **Level 3 — Read-only user:** read-only tracker access.
+- **Level 1 — Super Admin:** can change MIR/WIR statuses and save them to Excel; add, edit, and delete tracker records; register users; and manage the user list.
+- **Level 2 — Admin:** can change MIR/WIR statuses and save them to Excel. Record and user management remains Level 1 only.
+- **Level 3 — Normal User:** read-only tracker access.
 - Users can change their own password in the local editor; the new password is written to that user's row in `users.xlsx`.
-- Sign out returns to the sign-in page. Local restricted pages and write operations check the signed-in session and Level 1 access.
+- Sign out returns to the sign-in page. Local restricted pages and record/user management writes require Level 1; status updates accept Level 1 or Level 2.
 
 ## Tracker and Excel features
 
@@ -44,9 +45,10 @@ Project reference notes for maintenance, handover, and future updates.
 - Record number can be sorted in either direction: newest/highest first or oldest/lowest first. Newest/highest is the default.
 - The home table shows 10 records per page and provides numbered pagination with next/last navigation when more records match.
 - A top-right Notifications menu lists the three most recently modified/committed attachments across MIR, WIR, Delivery Notes, and CRS. Each entry opens the attachment; long MIR/WIR names use a short label and retain the full filename on hover.
+- The header includes a round notification bell, an account dropdown, and a persistent light/dark theme switch. Opening one dropdown closes any other open dropdown. Theme preference is stored in the browser.
 - MIR/WIR references are presented with compact labels such as `MIR-ITS-0018` and `WIR-ITS-0094`; hovering a link reveals its full reference, and matching PDFs open in a new tab.
 - Descriptions remain visible in the table. Item/notes are available from the workbook for searching and filtering and as description hover context.
-- Level 1 can change MIR/WIR statuses in the page, review staged changes, then choose **Update Excel** to write those status changes to the workbook.
+- Levels 1 and 2 can change MIR/WIR statuses in the page, review staged changes, then choose **Update Excel** to write those status changes to the workbook. Level 3 sees read-only status labels.
 - If the workbook is open/locked in Excel, close it and retry the save.
 
 ## Record entry, editing, and attachments

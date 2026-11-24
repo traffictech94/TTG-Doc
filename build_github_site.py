@@ -168,6 +168,8 @@ def build(output: Path) -> None:
     if logo.is_file():
         (output / "Logo").mkdir(exist_ok=True)
         shutil.copy2(logo, output / "Logo" / "TR.jpg")
+    for asset_name in ("shared-ui.css", "shared-ui.js"):
+        shutil.copy2(ROOT / asset_name, output / asset_name)
     print(f"Built Pages site: {len(users)} login accounts, {len(records_json)} records, {len(copied['MIR'])} MIR PDFs, {len(copied['WIR'])} WIR PDFs, {len(copied['CRS'])} CRS attachments.")
 
 
